@@ -1,0 +1,16 @@
+.streamlit/secrets.toml
+.env
+.env.*
+.pytest_cache/
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+*.log
+exports/
+.venv/
+venv/
+env/
+Datasets/
+A_6.ipynb
+A_6-Copy1.ipynb
+jiohotstar_reviews.csv
