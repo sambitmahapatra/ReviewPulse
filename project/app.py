@@ -1694,15 +1694,6 @@ def main() -> None:
         if llm_access_mode == DISABLE_LLM:
             st.caption("LLM disabled. Topic labels, vocabulary policy, and business insights will use deterministic fallbacks.")
 
-        llm_timeout = st.number_input(
-            "LLM timeout (seconds)",
-            min_value=5,
-            max_value=120,
-            value=30,
-            step=5,
-            disabled=llm_access_mode == DISABLE_LLM,
-        )
-
         render_divider()
         st.markdown("### TrainWatcher notifications")
         trainwatcher_enabled = st.checkbox("Enable TrainWatcher notifications", value=False)
@@ -1789,6 +1780,15 @@ def main() -> None:
 
                 st.caption(get_register_status_message(current_settings))
                 trainwatcher_settings = current_settings
+
+        llm_timeout = st.number_input(
+            "LLM timeout (seconds)",
+            min_value=5,
+            max_value=120,
+            value=30,
+            step=5,
+            disabled=llm_access_mode == DISABLE_LLM,
+        )
 
     render_divider()
     render_section_header(
