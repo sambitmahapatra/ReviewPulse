@@ -21,7 +21,13 @@ from project.pipeline.llm_analysis import LLMAnalyzer
 from project.pipeline.orchestrator import build_analysis_bundle
 from project.pipeline.preprocess import preprocess_reviews_frame
 from project.pipeline.scraper import MAX_ALLOWED_REVIEWS, fetch_reviews_dataframe
-from project.pipeline.sentiment import DEFAULT_SENTIMENT_MODEL, SentimentAnalyzer
+from project.pipeline.sentiment import (
+    DEFAULT_SENTIMENT_MODEL,
+    DEFAULT_SENTIMENT_MODEL_KEY,
+    SENTIMENT_MODEL_PROFILES,
+    SentimentAnalyzer,
+    get_sentiment_model_profile,
+)
 from project.utils.helpers import (
     DEFAULT_GROQ_MODEL,
     DEFAULT_OPENAI_MODEL,
@@ -196,8 +202,13 @@ def resolve_platform_llm_config() -> dict[str, str | bool]:
 
 
 @st.cache_resource(show_spinner=False)
-def load_sentiment_analyzer(model_name: str) -> SentimentAnalyzer:
-    return SentimentAnalyzer(model_name=model_name)
+def load_sentiment_analyzer(profile_key: str) -> SentimentAnalyzer:
+    profile = get_sentiment_model_profile(profile_key)
+    return SentimentAnalyzer(
+        model_name=str(profile["model_name"]),
+        max_length=int(profile["max_length"]),
+        label_map=dict(profile["label_map"]),
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -223,8 +234,8 @@ def preprocess_reviews_cached(frame: pd.DataFrame, preserve_terms: tuple[str, ..
 
 
 @st.cache_data(show_spinner=False)
-def score_reviews_cached(frame: pd.DataFrame, model_name: str, batch_size: int) -> tuple[pd.DataFrame, dict[str, float]]:
-    analyzer = load_sentiment_analyzer(model_name)
+def score_reviews_cached(frame: pd.DataFrame, profile_key: str, batch_size: int) -> tuple[pd.DataFrame, dict[str, float]]:
+    analyzer = load_sentiment_analyzer(profile_key)
     return analyzer.score_frame(frame, batch_size=batch_size)
 
 
@@ -1475,7 +1486,9 @@ def run_analysis_pipeline(
     own_model: str,
     own_api_key: str,
     llm_timeout: float,
+    sentiment_model_key: str,
 ) -> dict[str, Any]:
+    sentiment_model_profile = get_sentiment_model_profile(sentiment_model_key)
     llm_analyzer, llm_config = build_llm_analyzer(
         access_mode=llm_access_mode,
         own_provider=own_provider,
@@ -1530,10 +1543,10 @@ def run_analysis_pipeline(
                 tuple(vocabulary_profile.get("preserve_terms", [])),
             )
 
-            status.write("Running RoBERTa sentiment analysis...")
+            status.write(f"Running {sentiment_model_profile['summary_label']} sentiment analysis...")
             scored_reviews, sentiment_distribution = score_reviews_cached(
                 processed_reviews,
-                model_name=DEFAULT_SENTIMENT_MODEL,
+                profile_key=sentiment_model_key,
                 batch_size=sentiment_batch_size,
             )
 
@@ -1560,6 +1573,9 @@ def run_analysis_pipeline(
                 "llm_access_mode": llm_access_mode,
                 "llm_provider": str(llm_config.get("provider") or "none"),
                 "llm_model": str(llm_config.get("model") or ""),
+                "sentiment_model_key": sentiment_model_key,
+                "sentiment_model_name": str(sentiment_model_profile["model_name"]),
+                "sentiment_model_label": str(sentiment_model_profile["summary_label"]),
             }
         except Exception as exc:
             status.update(label="Analysis failed", state="error")
@@ -1591,6 +1607,13 @@ def main() -> None:
         st.caption(f"Theme: {st.session_state.ui_theme_mode}")
 
         sentiment_batch_size = st.slider("Sentiment batch size", min_value=8, max_value=64, value=16, step=8)
+        sentiment_model_key = st.selectbox(
+            "Sentiment model",
+            options=list(SENTIMENT_MODEL_PROFILES.keys()),
+            index=list(SENTIMENT_MODEL_PROFILES.keys()).index(DEFAULT_SENTIMENT_MODEL_KEY),
+        )
+        active_sentiment_profile = get_sentiment_model_profile(sentiment_model_key)
+        st.caption(str(active_sentiment_profile["description"]))
         max_reviews = st.slider("Maximum reviews", min_value=100, max_value=MAX_ALLOWED_REVIEWS, value=2000, step=100)
         review_language = st.text_input("Review language", value="en")
         country = st.text_input("Country", value="us")
@@ -1729,6 +1752,7 @@ def main() -> None:
                 own_model=own_model,
                 own_api_key=own_api_key,
                 llm_timeout=float(llm_timeout),
+                sentiment_model_key=sentiment_model_key,
             )
             st.session_state.analysis_result = result
         except Exception as exc:
@@ -1775,7 +1799,7 @@ def main() -> None:
             Source: {html.escape(result["source_name"])} |
             Analysis target: {html.escape(result["analysis_label"])} |
             LLM: {html.escape(llm_display_label)} |
-            Sentiment model: {html.escape(DEFAULT_SENTIMENT_MODEL)}
+            Sentiment model: {html.escape(str(result.get("sentiment_model_label") or result.get("sentiment_model_name") or DEFAULT_SENTIMENT_MODEL))}
         </div>
         """,
         unsafe_allow_html=True,

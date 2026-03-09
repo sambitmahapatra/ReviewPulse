@@ -9,16 +9,43 @@ import torch.nn.functional as F
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 
+DEFAULT_SENTIMENT_MODEL_KEY = "Balanced (RoBERTa 3-class)"
 DEFAULT_SENTIMENT_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
 MODEL_LABEL_MAP = {0: "negative", 1: "neutral", 2: "positive"}
+SENTIMENT_MODEL_PROFILES = {
+    DEFAULT_SENTIMENT_MODEL_KEY: {
+        "model_name": DEFAULT_SENTIMENT_MODEL,
+        "label_map": MODEL_LABEL_MAP,
+        "max_length": 128,
+        "description": "Best semantic fidelity for positive, neutral, and negative sentiment.",
+        "summary_label": "RoBERTa 3-class",
+    },
+    "Fast (DistilBERT binary)": {
+        "model_name": "distilbert/distilbert-base-uncased-finetuned-sst-2-english",
+        "label_map": {0: "negative", 1: "positive"},
+        "max_length": 128,
+        "description": "Faster CPU inference, but binary only. Neutral share will be 0 by design.",
+        "summary_label": "DistilBERT binary",
+    },
+}
 URL_PATTERN = re.compile(r"http\S+|www\S+|https\S+", re.IGNORECASE)
 HTML_PATTERN = re.compile(r"<.*?>")
 
 
+def get_sentiment_model_profile(profile_key: str) -> dict:
+    return SENTIMENT_MODEL_PROFILES.get(profile_key, SENTIMENT_MODEL_PROFILES[DEFAULT_SENTIMENT_MODEL_KEY]).copy()
+
+
 class SentimentAnalyzer:
-    def __init__(self, model_name: str = DEFAULT_SENTIMENT_MODEL, max_length: int = 128) -> None:
+    def __init__(
+        self,
+        model_name: str = DEFAULT_SENTIMENT_MODEL,
+        max_length: int = 128,
+        label_map: dict[int, str] | None = None,
+    ) -> None:
         self.model_name = model_name
         self.max_length = max_length
+        self.label_map = dict(label_map or MODEL_LABEL_MAP)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
@@ -55,7 +82,7 @@ class SentimentAnalyzer:
             batch_indices = torch.argmax(probabilities, dim=1).tolist()
             batch_scores = torch.max(probabilities, dim=1).values.tolist()
 
-            labels.extend(MODEL_LABEL_MAP[index] for index in batch_indices)
+            labels.extend(self.label_map.get(index, "neutral") for index in batch_indices)
             confidences.extend(batch_scores)
 
         return labels, confidences
