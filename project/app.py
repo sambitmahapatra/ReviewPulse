@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import io
 import json
+import uuid
 from textwrap import fill
 from typing import Any
 
@@ -16,6 +17,16 @@ from project.pipeline.ingestion import (
     normalize_play_store_frame,
     normalize_uploaded_frame,
     suggest_column_mapping,
+)
+from project.integrations.trainwatcher_notifier import (
+    TrainWatcherNotificationSettings,
+    TrainWatcherNotifier,
+    clear_session_credentials,
+    get_register_status_message,
+    get_session_credentials_path,
+    send_verification_code,
+    trainwatcher_available,
+    verify_session_email,
 )
 from project.pipeline.llm_analysis import LLMAnalyzer
 from project.pipeline.orchestrator import build_analysis_bundle
@@ -1487,8 +1498,10 @@ def run_analysis_pipeline(
     own_api_key: str,
     llm_timeout: float,
     sentiment_model_key: str,
+    trainwatcher_settings: TrainWatcherNotificationSettings,
 ) -> dict[str, Any]:
     sentiment_model_profile = get_sentiment_model_profile(sentiment_model_key)
+    notifier = TrainWatcherNotifier(trainwatcher_settings)
     llm_analyzer, llm_config = build_llm_analyzer(
         access_mode=llm_access_mode,
         own_provider=own_provider,
@@ -1530,6 +1543,11 @@ def run_analysis_pipeline(
                 )
                 source_name = csv_source_name or SOURCE_CSV_UPLOAD
 
+            notifier.milestone(
+                analysis_label=ingestion_result.analysis_label,
+                stage="Reviews fetched",
+                detail=f"{len(ingestion_result.frame):,} reviews are ready for processing.",
+            )
             status.write("Generating topic vocabulary policy...")
             vocabulary_profile = llm_analyzer.generate_topic_vocabulary_profile(
                 topic_context=ingestion_result.topic_context or ingestion_result.analysis_label,
@@ -1549,6 +1567,14 @@ def run_analysis_pipeline(
                 profile_key=sentiment_model_key,
                 batch_size=sentiment_batch_size,
             )
+            notifier.milestone(
+                analysis_label=ingestion_result.analysis_label,
+                stage="Sentiment complete",
+                detail=(
+                    f"Positive: {sentiment_distribution.get('positive', 0.0) * 100:.1f}% | "
+                    f"Negative: {sentiment_distribution.get('negative', 0.0) * 100:.1f}%"
+                ),
+            )
 
             status.write("Modeling topics and generating insights...")
             analysis_bundle = build_analysis_bundle(
@@ -1561,6 +1587,13 @@ def run_analysis_pipeline(
             )
 
             status.update(label="Analysis complete", state="complete")
+            notifier.complete(
+                analysis_label=ingestion_result.analysis_label,
+                source_name=source_name,
+                review_count=len(scored_reviews),
+                positive_share=sentiment_distribution.get("positive", 0.0),
+                negative_share=sentiment_distribution.get("negative", 0.0),
+            )
 
             return {
                 "analysis_label": ingestion_result.analysis_label,
@@ -1579,6 +1612,10 @@ def run_analysis_pipeline(
             }
         except Exception as exc:
             status.update(label="Analysis failed", state="error")
+            notifier.fail(
+                analysis_label=play_store_url if source_mode == SOURCE_PLAY_STORE else (csv_product_name or csv_source_name or "uploaded reviews"),
+                error_text=str(exc),
+            )
             raise
 
 
@@ -1589,6 +1626,14 @@ def main() -> None:
         st.session_state.ui_theme_mode = UI_THEME_DARK
     if "analysis_result" not in st.session_state:
         st.session_state.analysis_result = None
+    if "trainwatcher_session_id" not in st.session_state:
+        st.session_state.trainwatcher_session_id = uuid.uuid4().hex
+    if "trainwatcher_notice" not in st.session_state:
+        st.session_state.trainwatcher_notice = ""
+    if "trainwatcher_verified_email" not in st.session_state:
+        st.session_state.trainwatcher_verified_email = ""
+    if "trainwatcher_verified" not in st.session_state:
+        st.session_state.trainwatcher_verified = False
 
     render_styles(st.session_state.ui_theme_mode)
     top_bar_left, top_bar_right = st.columns([5.2, 1.5], gap="medium")
@@ -1657,6 +1702,93 @@ def main() -> None:
             step=5,
             disabled=llm_access_mode == DISABLE_LLM,
         )
+
+        render_divider()
+        st.markdown("### TrainWatcher notifications")
+        trainwatcher_enabled = st.checkbox("Enable TrainWatcher notifications", value=False)
+        trainwatcher_settings = TrainWatcherNotificationSettings()
+        if trainwatcher_enabled:
+            available, availability_error = trainwatcher_available()
+            if not available:
+                st.error(f"TrainWatcher is unavailable in this environment: {availability_error}")
+            else:
+                notification_email = st.text_input(
+                    "Notification email",
+                    value=st.session_state.get("trainwatcher_verified_email", ""),
+                    key="trainwatcher_email_input",
+                )
+                verification_code = st.text_input("6-digit verification code", value="", key="trainwatcher_code_input")
+                milestone_notifications = st.checkbox("Send milestone notifications", value=True)
+                tw_action_columns = st.columns(3, gap="small")
+                credentials_path = get_session_credentials_path(st.session_state.trainwatcher_session_id)
+
+                with tw_action_columns[0]:
+                    if st.button("Send code", use_container_width=True):
+                        try:
+                            if not notification_email.strip():
+                                raise ValueError("Enter an email address first.")
+                            send_verification_code(notification_email.strip())
+                            st.session_state.trainwatcher_verified = False
+                            st.session_state.trainwatcher_verified_email = notification_email.strip()
+                            st.session_state.trainwatcher_notice = "Verification code sent. Check your email."
+                        except Exception as exc:
+                            st.session_state.trainwatcher_notice = str(exc)
+
+                with tw_action_columns[1]:
+                    if st.button("Verify email", use_container_width=True):
+                        try:
+                            if not notification_email.strip():
+                                raise ValueError("Enter an email address first.")
+                            if not verification_code.strip():
+                                raise ValueError("Enter the 6-digit verification code.")
+                            verify_session_email(
+                                email=notification_email.strip(),
+                                code=verification_code.strip(),
+                                credentials_path=credentials_path,
+                            )
+                            st.session_state.trainwatcher_verified = True
+                            st.session_state.trainwatcher_verified_email = notification_email.strip()
+                            st.session_state.trainwatcher_notice = "TrainWatcher email verified for this session."
+                        except Exception as exc:
+                            st.session_state.trainwatcher_verified = False
+                            st.session_state.trainwatcher_notice = str(exc)
+
+                with tw_action_columns[2]:
+                    if st.button("Forget email", use_container_width=True):
+                        clear_session_credentials(credentials_path)
+                        st.session_state.trainwatcher_verified = False
+                        st.session_state.trainwatcher_verified_email = ""
+                        st.session_state.trainwatcher_email_input = ""
+                        st.session_state.trainwatcher_code_input = ""
+                        st.session_state.trainwatcher_notice = "TrainWatcher session email cleared."
+
+                if st.session_state.trainwatcher_notice:
+                    if st.session_state.trainwatcher_verified:
+                        st.success(st.session_state.trainwatcher_notice)
+                    else:
+                        st.info(st.session_state.trainwatcher_notice)
+
+                email_mismatch = (
+                    bool(notification_email.strip())
+                    and st.session_state.get("trainwatcher_verified_email", "")
+                    and notification_email.strip() != st.session_state.get("trainwatcher_verified_email", "")
+                )
+                if email_mismatch:
+                    st.warning("The email has changed. Verify the new email before starting analysis.")
+
+                current_settings = TrainWatcherNotificationSettings(
+                    enabled=trainwatcher_enabled,
+                    milestones_enabled=milestone_notifications,
+                    email=notification_email.strip(),
+                    credentials_path=credentials_path,
+                )
+                if email_mismatch:
+                    current_settings.credentials_path = ""
+                elif not st.session_state.trainwatcher_verified:
+                    current_settings.credentials_path = ""
+
+                st.caption(get_register_status_message(current_settings))
+                trainwatcher_settings = current_settings
 
     render_divider()
     render_section_header(
@@ -1735,6 +1867,8 @@ def main() -> None:
 
     if analyze_clicked:
         try:
+            if trainwatcher_settings.enabled and not trainwatcher_settings.credentials_path:
+                raise ValueError("Verify a TrainWatcher email before starting analysis.")
             result = run_analysis_pipeline(
                 source_mode=source_mode,
                 play_store_url=play_store_url,
@@ -1753,6 +1887,7 @@ def main() -> None:
                 own_api_key=own_api_key,
                 llm_timeout=float(llm_timeout),
                 sentiment_model_key=sentiment_model_key,
+                trainwatcher_settings=trainwatcher_settings,
             )
             st.session_state.analysis_result = result
         except Exception as exc:

@@ -110,6 +110,7 @@ It can analyze:
 - LLM-generated semantic topic labels
 - LLM-generated product and business insights
 - dark/light executive dashboard UI
+- optional TrainWatcher email notifications for milestones and completion
 - downloadable CSV, JSON, and PDF outputs
 
 ## End-to-End Pipeline
@@ -184,6 +185,16 @@ The app supports three LLM modes:
 - `Disable LLM`
 
 In deployment, `Our Default LLM` is expected to use backend-managed secrets. During local testing, `Your Own LLM` is the practical option if no backend key is configured.
+
+### TrainWatcher notifications
+
+The app also supports optional TrainWatcher cloud email notifications for:
+
+- milestone updates during analysis
+- completion
+- failure
+
+Users can verify their own email inside the app session before starting analysis.
 
 ### Supported outputs
 

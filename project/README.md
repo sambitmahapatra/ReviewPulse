@@ -14,6 +14,7 @@ ReviewPulse is a Streamlit application for universal review analytics, with buil
 - Transformer sentiment analysis with `cardiffnlp/twitter-roberta-base-sentiment-latest`
 - Positive and negative topic modeling with `CountVectorizer` and LDA
 - Platform-managed topic labeling and business insights using Groq or OpenAI, with optional user key override
+- Optional TrainWatcher email notifications for milestone, completion, and failure updates
 - Plotly sentiment and topic charts
 - Positive and negative word clouds
 - Downloadable scored-review CSV, analysis-summary JSON, AI-summary PDF, and visuals PDF exports
